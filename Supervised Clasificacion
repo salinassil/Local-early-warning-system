@@ -1,0 +1,234 @@
+#####  Ingrese las rutas y nombres de los archivos y parametros
+Carpeta <- "C:/TRABAJO FINAL/INSUMOS/SHAPES"
+Nombre_shape_area_estudio <- "AE"
+Nombre_muestreo <- "SITIOS_ENTRENAMIENTO"   ##shapefile con los poligonos base
+b2 <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_B2.tif"
+b3 <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_B3.tif"
+b4 <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_B4.tif"
+b5 <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_B5.tif"
+b6 <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_B6.tif"
+b7 <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_B7.tif"
+Met <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/LC82330842016015LGN00_MTL.txt"  ##metadatos deben estar en la misma carpeta que las imagenes
+mde_in <- "C:/TRABAJO FINAL/INSUMOS/IMAGENES/MDE_VI.tif"
+Titulo_salida <- "CLASIFICACI�N SUPERVISADA"
+Subtitulo_salida <- "VI REGI�N. ENERO 2016"
+Brick_auxiliar <- "C:/TRABAJO FINAL/RESULTADOS/BRICK.tif"
+Coberturas_salida <- "C:/TRABAJO FINAL/RESULTADOS/COBERTURA_DE_LA_TIERRA_2016.tif"
+Tabla_resumen_salida_coberturas <- "C:/TRABAJO FINAL/RESULTADOS/TABLA_RESUMEN_COBERTURAS_15_01_2016.xlsx"   ### Ruta y nombre de salida tabla resumen
+
+#### Carga de paquetes y lectura de librerias
+memory.limit(size=70000)
+list.of.packages <- c("sp","rgeos","rgdal","raster","maptools","devtools","gdalUtils","RStoolbox","landsat","landsat8","elastic","randomForest", "bitops","RCurl","snow","ggplot2", "caret", "e1071", "randomForest","RColorBrewer","writexl")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+install.packages("https://github.com/Terradue/rLandsat8/releases/download/v0.1-SNAPSHOT/rLandsat8_0.1.0.tar.gz", repos = NULL, type = "source")
+library(sp)
+library(rgeos)
+library(rgdal)
+library(raster)
+library(maptools)
+library(landsat)
+library(landsat8)
+library(devtools)
+library(rLandsat8)
+library(gdalUtils)
+library(RStoolbox)
+library(elastic)
+library(bitops)
+library(RCurl)
+library(lattice)
+library(ggplot2)
+library(caret)
+library(snow)
+library(e1071)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(RColorBrewer)
+library(writexl)
+
+#### Lectura de shapefiles y definici�n de variables auxiliares
+AE <- readOGR(dsn = Carpeta, layer = Nombre_shape_area_estudio)
+SE <- readOGR(dsn = Carpeta, layer = Nombre_muestreo)
+responseCol <- "ID_CLASE"   ## nombre del campo con las clases
+proj_1 <- proj4string(AE)
+meta <-readMeta(Met, raw = FALSE)
+cal_rad <- meta$CALRAD
+cal_ang <- meta$SOLAR_PARAMETERS
+
+##### Lectura y procesamiento de bandas espectrales (proyeccion y recorte), m�s transformacion a reflectancia espectral
+Ref_b2 <- raster(reflconvS((as(mask(crop(projectRaster(raster(b2), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Ref_b3 <- raster(reflconvS((as(mask(crop(projectRaster(raster(b3), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Ref_b4 <- raster(reflconvS((as(mask(crop(projectRaster(raster(b4), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Ref_b5 <- raster(reflconvS((as(mask(crop(projectRaster(raster(b5), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Ref_b6 <- raster(reflconvS((as(mask(crop(projectRaster(raster(b6), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Ref_b7 <- raster(reflconvS((as(mask(crop(projectRaster(raster(b7), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+
+#### Lectura y procesamiento MDE (proyecci�n y recorte), m�s correccion topografica de bandas espectrales
+MDE <- resample(mask(crop(projectRaster(raster(mde_in), crs = proj_1), extent(AE), snap = "out"), AE),raster(extent(Ref_b4), nrow = nrow(Ref_b4), ncol = ncol(Ref_b4), crs = proj_1))  ## Lectura y pre procesamiento MDE
+B2_top <- topCor(Ref_b2, MDE, meta, method = "C")
+B3_top <- topCor(Ref_b3, MDE, meta, method = "C")
+B4_top <- topCor(Ref_b4, MDE, meta, method = "C")
+B5_top <- topCor(Ref_b5, MDE, meta, method = "C")
+B6_top <- topCor(Ref_b6, MDE, meta, method = "C")
+B7_top <- topCor(Ref_b7, MDE, meta, method = "C")
+
+#### clasificacion supervisada (RandomForest)
+OLI <- brick(c(blue = B2_top, green = B3_top,red = B4_top,nir = B5_top,swir1 = B6_top,swir2 = B7_top))
+sr <- "+proj=utm +zone=19 +south +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+OLI <- projectRaster(OLI, crs =sr)
+writeRaster(OLI, Brick_auxiliar,format="GTiff", overwrite=TRUE)   ###exportar brick (ahorro de tiempo en caso de errores posteriores)
+# OLI <- brick(Brick_auxiliar)
+# names(OLI) <- c("blue", "green", "red", "nir", "swir1", "swir2")
+# plotRGB(OLI, 3,2,1, stretch="lin")
+# plot(SE, add=TRUE, col="red")
+dfAll <- data.frame(matrix(vector(), nrow = 0, ncol = length(names(OLI)) + 1))   
+for (i in 1:length(unique(SE[[responseCol]]))) {
+  category <- unique(SE[[responseCol]])[i]
+  categorymap <- SE[SE[[responseCol]] == category, ]
+  dataSet <- extract(OLI, categorymap)
+  dataSet <- dataSet[!unlist(lapply(dataSet, is.null))]
+  dataSet <-
+    lapply(dataSet, function(x) {
+      cbind(x, class = as.numeric(rep(category, nrow(x))))
+    })
+  df <- do.call("rbind", dataSet)
+  dfAll <- rbind(dfAll, df)
+}
+dfAll <- na.omit(dfAll)
+saveRDS(dfAll, file = "RESULTADOS INTERMEDIOS/dfAll.rds")    ###exportar RDS (ahorro de tiempo en caso de errores posteriores)
+# names(dfAll) <- c("blue", "green", "red", "nir", "swir1", "swir2", "class")
+nsamples <- 10000
+sdfAll <- subset(dfAll[sample(1:nrow(dfAll), nsamples), ])
+ntest <- 10000
+test_dfAll <- subset(dfAll[sample(1:nrow(dfAll[-nrow(sdfAll)]), ntest), ])
+modFit_rf <- train(as.factor(class) ~ blue + green + red + nir+ swir1 + swir2, method = "rf", data = sdfAll)
+saveRDS(modFit_rf, file = "RESULTADOS INTERMEDIOS/modFit_rf_10000.rds")   ###exportar RDS (ahorro de tiempo en caso de errores posteriores)
+#modFit_rf <-readRDS("RESULTADOS INTERMEDIOS/modFit_rf_10000.rds")
+prediccion <- predict(modFit_rf, test_dfAll[,-7])
+MC <- table(test_dfAll[,7], prediccion)
+acierto <- (sum(diag(MC))) / sum(MC)
+acierto      #####  calidad de la clasificaci�n
+beginCluster()      ###### aceleraci�n del proceso de clasificacion
+preds_rf <- clusterR(OLI, raster::predict, args = list(model = modFit_rf))
+endCluster()
+writeRaster(preds_rf, filename = Coberturas_salida, format="GTiff", overwrite = TRUE)  ## Cobertura raster de salida con las coberturas de la tierra
+pix_pred_RF <- as(preds_rf, "SpatialPixelsDataFrame")   
+
+#### Ploteo con los detalles m�nimos requeridos
+list.of.packages <- c("tidyr")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+library(tidyr)
+df_pred_RF <- as.data.frame(pix_pred_RF)
+names(df_pred_RF) <- c("ID_CLASE", "Longitud","Latitud")
+df_pred_RF$ID_CLASE <- as.character(df_pred_RF$ID_CLASE)
+SE@data$ID_CLASE <- as.character(SE@data$ID_CLASE)
+etiquetas <- as.data.frame(unique(SE@data))
+list.of.packages <- c("dplyr")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+library(dplyr)
+df_pred_RF <- df_pred_RF %>% left_join(etiquetas, by = "ID_CLASE")
+saveRDS(df_pred_RF, file = "RESULTADOS INTERMEDIOS/df_pred_RF.rds")
+library(ggplot2)
+ggplot(aes(x = Longitud, y = Latitud), data = df_pred_RF) +
+  geom_tile(aes(fill = CLASE)) +
+  coord_equal() + theme(
+  plot.subtitle = element_text(hjust = 0.5),
+  panel.grid.major = element_line(colour = "gray94"),
+  panel.grid.minor = element_line(colour = "gray94"),
+  plot.title = element_text(hjust = 0.5),
+  panel.background = element_rect(fill = "gray100")
+) + labs(title = Titulo_salida, subtitle = Subtitulo_salida)  ### toma su tiempo en plotear, pero funciona con paciencia el despliegue
+
+#### Tabla resumen salida
+aux11 <- (preds_rf*0)+1
+list <- zonal(aux11, preds_rf,fun="sum",rm=TRUE)
+list <- data.frame(list)
+tabla_resumen <- write_xlsx(list,Tabla_resumen_salida_coberturas, col_names = TRUE) ######  entrega tabla resumen con el nuemro de pixeles por clase de cobertura de la tierra (codigos)
+
+
+###########################################################################################
+###########################################################################################
+# Algoritmo Monocanal para obtener la Temperatura Superficial Terrestre (Landsat8/MODIS)
+# Se segmenta el algoritmo en actividades requeridas para obtener la TST.
+###########################################################################################
+###########################################################################################
+# Actividad 1: Instalacion y carga de paquetes y librerias
+install.packages("sp")
+install.packages("rgeos")
+install.packages("rgdal")
+install.packages("raster")
+install.packages("maptools")
+install.packages("devtools")
+install.packages("https://github.com/Terradue/rLandsat8/releases/download/v0.1-SNAPSHOT/rLandsat8_0.1.0.tar.gz", repos = NULL, type = "source")
+install.packages("gdalUtils")
+install.packages("RStoolbox")
+install.packages("landsat")
+install.packages("landsat8")
+install.packages("elastic")
+install.packages("bitops")
+install.packages("RCurl")
+library(sp)
+library(rgeos)
+library(rgdal)
+library(raster)
+library(maptools)
+library(landsat)
+library(landsat8)
+library(devtools)
+library(rLandsat8)
+library(gdalUtils)
+library(RStoolbox)
+library(elastic)
+library(bitops)
+library(RCurl)
+memory.limit(size = 60000)
+#### Actividad 2: Lectura y pretratamiento de la cobertura con el area de estudio (AE)
+AE <- spTransform(AE <- readOGR(dsn = "C:/calama/Insumos", layer = "Ae_Calama"),CRS("+proj=utm +zone=19 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+# Buffer auxiliar para la extraccion del vapor de agua
+AE_buffer <- spTransform(gBuffer(AE, width =2000, quadsegs=10), CRS("+proj=utm +zone=19 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+#### Actividad 3: Lectura y pretratamiento de bandas landsat 8 (B4, B5 y B11)
+proj_1 <- "+proj=utm +zone=19 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+meta <-readMeta("C:/calama/Insumos/2014032MTL.txt", raw = FALSE)
+cal_rad <- meta$CALRAD
+cal_ang <- meta$SOLAR_PARAMETERS
+##### Actividad 4: Transformacion a radiancia y reflectancia espectral
+Ref_b4 <- raster(reflconvS((as(mask(crop(projectRaster(raster("C:/calama/Insumos/2014032B4.tif"), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Ref_b5 <- raster(reflconvS((as(mask(crop(projectRaster(raster("C:/calama/Insumos/2014032B5.tif"), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), 0.00002, -0.1,cal_ang[2]))
+Rad_b11 <- raster(radconv((as(mask(crop(projectRaster(raster("C:/calama/Insumos/2014032B11.tif"), crs = proj_1), extent(AE), snap="out"), AE),"SpatialGridDataFrame")), Ml= cal_rad[11,2], Al= cal_rad[11,1]))
+##### Actividad 5: Lectura y pretratamiento del vapor de agua MODIS (MOD05_L2)
+Vapor <-((mask(crop(resample(mask(crop(projectRaster(raster("C:/calama/Insumos/A2014033.tif"), crs = proj_1), extent(AE_buffer), snap = "out"), AE_buffer), Ref_b4,method = "ngb"), extent(AE), snap = "out"), AE))/1000)
+#### Actividad 6: correccion topografica bandas espectrales
+MDE <- resample(mask(crop(projectRaster(raster("C:/calama/Insumos/mde_calama.tif"), crs = proj_1), extent(AE), snap = "out"), AE),raster(extent(Ref_b4), nrow = nrow(Ref_b4), ncol = ncol(Ref_b4), crs = proj_1))
+B4_top <- topCor(Ref_b4, MDE, meta, method = "C")
+B5_top <- topCor(Ref_b5, MDE, meta, method = "C")
+B11_top <- topCor(Rad_b11, MDE, meta, method = "C")
+#### Actividad 6: Obtenci�n del NDVI y la Emisividad ####
+NDVI <- (B5_top - B4_top)/(B5_top + B4_top)
+###Emisividad de la superficie terrestre
+NDVI_aux <- NDVI*1000
+EMISIVIDAD <- ratify(reclassify(NDVI_aux, matrix(c(-Inf, -1000, 0.985, -1000, -180, 0.965, -180, 160, 0.955, 160, 730, 0, 730, +Inf, 0.990), ncol = 3, byrow = TRUE), right=NA))+(1.0094 + 0.047 * log(NDVI*ratify(reclassify(NDVI_aux, matrix(c(-Inf, 160, 0,160, 730, 1, 730, +Inf,0 ), ncol = 3, byrow = TRUE), right=NA)) + ratify(reclassify(NDVI_aux, matrix(c(-Inf, 160, 1,160, 730, 0, 730, +Inf,1 ), ncol = 3, byrow = TRUE), right=NA)), base = exp(1)))*ratify(reclassify(NDVI_aux, matrix(c(-Inf, 160, 0,160, 730, 1, 730, +Inf,0 ), ncol = 3, byrow = TRUE), right=NA)) 
+#### Temperatura de brillo (TB) en el sensor (Banda 11, Landsat 8) #####
+TB <- (1201.14/(log((480.89/Rad_b11)+1)))
+#### Funciones de transferencia atmosferica ######
+Phi1 <- 0.0405*(Vapor^3)-0.0809*(Vapor^2)+0.2919*Vapor+0.9620
+Phi2 <- (-0.2960)*(Vapor^3)+0.3611*(Vapor^2)-1.0257*Vapor+0.9444
+Phi3 <- (-0.0443)*(Vapor^3)+0.2509*(Vapor^2)+1.4573*Vapor-0.0854
+#### funciones gamma y delta ####
+gamma <- (1149*480.49*(TB^2))/(1201.14*Rad_b11*((1149^5)*Rad_b11+480.89))
+delta <- (-1*gamma)*Rad_b11 + TB
+##### Algoritmo Monocanal (Jimenez) ########
+TST <- gamma*((1/EMISIVIDAD)*(Phi1*Rad_b11 + Phi2)+Phi3) + delta - 273.15
+paleta <- colorRampPalette(c("sky blue", "orange","red"))( 200 )
+plot(TST, col = paleta)
+writeRaster(TST, filename="TST.tif", format="GTiff", overwrite=TRUE)
+TST
+
+
+
+
+
+
+
